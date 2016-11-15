@@ -2986,6 +2986,7 @@ else
 fi
 
 
+
 dnl ---------------------------------------------------------------------------
 
 AC_SUBST([OPT_GDAL_FORMATS], [$OPT_GDAL_FORMATS])
@@ -3325,6 +3326,42 @@ fi
 
 dnl This is used by the GNUmakefile in frmts/dods (via GDALmake.opt)
 AC_SUBST(DODS_INC)
+
+dnl ---------------------------------------------------------------------------
+dnl Select a grib_api Library to use for GRIB2, or disable driver.
+dnl ---------------------------------------------------------------------------
+GRIB2_SETTING=no
+GRIB2_INC=
+GRIB2_LIB=
+
+AC_ARG_WITH(grib_api,[  --with-grib-api[=ARG]        Include grib_api support (ARG=grib_api install prefix, yes or no)],,)
+
+if test "$with_grib_api" = "no" ; then
+
+  GRIB2_SETTING=no
+
+  echo "grib_api support disabled."
+
+elif test "$with_grib_api" = "yes"; then
+
+  AC_CHECK_LIB(grib_api,grib_handle_new_from_file,GRIB2_SETTING=yes,GRIB2_SETTING=no,-lm)
+
+  if test "$GRIB2_SETTING" = "yes" ; then
+    AC_MSG_RESULT([found.])
+    GRIB2_LIB="-L$with_grib_api/lib -lgrib_api"
+    GRIB2_INC="-I$with_grib_api/include"
+  else
+    AC_MSG_ERROR([not found.])
+  fi
+fi
+
+AC_SUBST(GRIB2_SETTING,$GRIB2_SETTING)
+AC_SUBST(GRIB2_LIB,$GRIB2_LIB)
+AC_SUBST(GRIB2_INC,$GRIB2_INC)
+
+if test "$GRIB2_SETTING" != "no" ; then
+  OPT_GDAL_FORMATS="grib2 $OPT_GDAL_FORMATS"
+fi
 
 dnl ---------------------------------------------------------------------------
 dnl Check for curl (i.e. for wcs).
@@ -5262,6 +5299,7 @@ LOC_MSG([  MrSID support:             ${HAVE_MRSID}])
 LOC_MSG([  MrSID/MG4 Lidar support:   ${HAVE_MRSID_LIDAR}])
 LOC_MSG([  MSG support:               ${HAVE_MSG}])
 LOC_MSG([  GRIB support:              ${HAVE_GRIB}])
+LOC_MSG([  grib_api support:          ${GRIB2_SETTING}])
 LOC_MSG([  EPSILON support:           ${EPSILON_SETTING}])
 LOC_MSG([  WebP support:              ${WEBP_SETTING}])
 LOC_MSG([  cURL support (wms/wcs/...):${CURL_SETTING}])

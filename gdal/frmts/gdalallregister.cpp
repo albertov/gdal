@@ -280,6 +280,11 @@ void CPL_STDCALL GDALAllRegister()
     GDALRegister_GRIB();
 #endif
 
+#ifdef FRMT_grib2
+    GDALRegister_GRIB2();
+#endif
+
+
 #ifdef FRMT_mrsid
     GDALRegister_MrSID();
 #endif
