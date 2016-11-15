@@ -3334,16 +3334,10 @@ GRIB2_SETTING=no
 GRIB2_INC=
 GRIB2_LIB=
 
-AC_ARG_WITH(grib_api,[  --with-grib-api[=ARG]        Include grib_api support (ARG=grib_api install prefix, yes or no)],,)
+AC_ARG_WITH(grib_api,[  --with-grib-api[=ARG]        Include grib_api support (ARG=grib_api install prefix)],,)
 
-if test "$with_grib_api" = "no" ; then
-
-  GRIB2_SETTING=no
-
-  echo "grib_api support disabled."
-
-elif test "$with_grib_api" = "yes"; then
-
+if test ! "$with_grib_api" = "" ; then
+  AC_MSG_CHECKING([for grib_api (GRIB2)])
   AC_CHECK_LIB(grib_api,grib_handle_new_from_file,GRIB2_SETTING=yes,GRIB2_SETTING=no,-lm)
 
   if test "$GRIB2_SETTING" = "yes" ; then

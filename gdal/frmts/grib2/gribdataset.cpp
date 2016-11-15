@@ -27,6 +27,7 @@
  ******************************************************************************
  *
  */
+#include "grib_api.h"
 
 #include "cpl_multiproc.h"
 #include "gdal_frmts.h"
@@ -62,16 +63,10 @@ class GRIB2Dataset : public GDALPamDataset
     const char *GetProjectionRef();
 
   private:
-    void SetGribMetaData(grib_MetaData* meta);
-    VSILFILE    *fp;
+    FILE  *fp;
+    grib_context *ctx;
     char  *pszProjection;
-    // Calculate and store once as GetGeoTransform may be called multiple times.
     double adfGeoTransform[6];
-
-    GIntBig  nCachedBytes;
-    GIntBig  nCachedBytesThreshold;
-    int      bCacheOnlyOneBand;
-    GRIB2RasterBand* poLastUsedBand;
 };
 
 /************************************************************************/
@@ -85,7 +80,7 @@ class GRIB2RasterBand : public GDALPamRasterBand
     friend class GRIB2Dataset;
 
 public:
-    GRIB2RasterBand( GRIB2Dataset*, int, inventoryType* );
+    GRIB2RasterBand( GRIB2Dataset*);
     virtual ~GRIB2RasterBand();
     virtual CPLErr IReadBlock( int, int, void * );
     virtual const char *GetDescription() const;
@@ -99,49 +94,16 @@ public:
 private:
     CPLErr       LoadData();
 
-    static void ReadGribData( DataSource &, sInt4, int, double**,
-                              grib_MetaData** );
-    sInt4 start;
-    int subgNum;
-    char *longFstLevel;
-
-    double * m_Grib_Data;
-    grib_MetaData* m_Grib_MetaData;
-
-    int      nGribDataXSize;
-    int      nGribDataYSize;
 };
 
-/************************************************************************/
-/*                         ConvertUnitInText()                          */
-/************************************************************************/
-
-static CPLString ConvertUnitInText( bool bMetricUnits, const char* pszTxt )
-{
-    if( !bMetricUnits )
-        return pszTxt;
-
-    CPLString osRes(pszTxt);
-    size_t iPos = osRes.find("[K]");
-    if( iPos != std::string::npos )
-        osRes = osRes.substr(0, iPos) + "[C]" + osRes.substr(iPos + 3);
-    return osRes;
-}
 
 /************************************************************************/
 /*                           GRIB2RasterBand()                            */
 /************************************************************************/
 
-GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn, int nBandIn,
-                                inventoryType *psInv ) :
-    start(psInv->start),
-    subgNum(psInv->subgNum),
-    longFstLevel(CPLStrdup(psInv->longFstLevel)),
-    m_Grib_Data(NULL),
-    m_Grib_MetaData(NULL),
-    nGribDataXSize(poDSIn->nRasterXSize),
-    nGribDataYSize(poDSIn->nRasterYSize)
+GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn )
 {
+  /*
     poDS = poDSIn;
     nBand = nBandIn;
 
@@ -168,81 +130,9 @@ GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn, int nBandIn,
                      CPLString().Printf("%12.0f sec UTC", psInv->validTime ) );
     SetMetadataItem( "GRIB_FORECAST_SECONDS",
                      CPLString().Printf("%.0f sec", psInv->foreSec ) );
+  */
 }
 
-/************************************************************************/
-/*                          FindPDSTemplate()                           */
-/*                                                                      */
-/*      Scan the file for the PDS template info and represent it as     */
-/*      metadata.                                                       */
-/************************************************************************/
-
-void GRIB2RasterBand::FindPDSTemplate()
-
-{
-    GRIB2Dataset *poGDS = reinterpret_cast<GRIB2Dataset *>( poDS );
-
-/* -------------------------------------------------------------------- */
-/*      Collect section 4 octet information ... we read the file        */
-/*      ourselves since the GRIB2 API does not appear to preserve all    */
-/*      this for us.                                                    */
-/* -------------------------------------------------------------------- */
-    GIntBig nOffset = VSIFTellL( poGDS->fp );
-
-    VSIFSeekL( poGDS->fp, start+16, SEEK_SET );
-
-    GByte abyHead[5] = { 0 };
-    VSIFReadL( abyHead, 5, 1, poGDS->fp );
-
-    GUInt32 nSectSize = 0;
-    while( abyHead[4] != 4 )
-    {
-        memcpy( &nSectSize, abyHead, 4 );
-        CPL_MSBPTR32( &nSectSize );
-
-        if( VSIFSeekL( poGDS->fp, nSectSize-5, SEEK_CUR ) != 0
-            || VSIFReadL( abyHead, 5, 1, poGDS->fp ) != 1 )
-            break;
-    }
-
-    if( abyHead[4] == 4 )
-    {
-        memcpy( &nSectSize, abyHead, 4 );
-        CPL_MSBPTR32( &nSectSize );
-
-        GByte *pabyBody = static_cast<GByte *>( CPLMalloc(nSectSize - 5) );
-        VSIFReadL( pabyBody, 1, nSectSize-5, poGDS->fp );
-
-        GUInt16 nCoordCount = 0;
-        memcpy( &nCoordCount, pabyBody + 5 - 5, 2 );
-        CPL_MSBPTR16( &nCoordCount );
-
-        GUInt16 nPDTN = 0;
-        memcpy( &nPDTN, pabyBody + 7 - 5, 2 );
-        CPL_MSBPTR16( &nPDTN );
-
-        SetMetadataItem( "GRIB_PDS_PDTN",
-                         CPLString().Printf( "%d", nPDTN ) );
-
-        CPLString osOctet;
-        for( int i = 9; i < static_cast<int>( nSectSize ); i++ )
-        {
-            char szByte[10] = { '\0' };
-
-            if( i == 9 )
-                snprintf( szByte, sizeof(szByte), "%d", pabyBody[i-5] );
-            else
-                snprintf( szByte, sizeof(szByte), " %d", pabyBody[i-5] );
-            osOctet += szByte;
-        }
-
-        SetMetadataItem( "GRIB_PDS_TEMPLATE_NUMBERS", osOctet );
-
-        CPLFree( pabyBody );
-    }
-
-    VSIFSeekL( poGDS->fp, nOffset, SEEK_SET );
-}
 
 /************************************************************************/
 /*                         GetDescription()                             */
@@ -250,87 +140,9 @@ void GRIB2RasterBand::FindPDSTemplate()
 
 const char * GRIB2RasterBand::GetDescription() const
 {
-    if( longFstLevel == NULL )
-        return GDALPamRasterBand::GetDescription();
-
-    return longFstLevel;
+    return GDALPamRasterBand::GetDescription();
 }
 
-/************************************************************************/
-/*                             LoadData()                               */
-/************************************************************************/
-
-CPLErr GRIB2RasterBand::LoadData()
-
-{
-    if( !m_Grib_Data )
-    {
-        GRIB2Dataset *poGDS = reinterpret_cast<GRIB2Dataset *>( poDS );
-
-        if (poGDS->bCacheOnlyOneBand)
-        {
-            // In "one-band-at-a-time" strategy, if the last recently used
-            // band is not that one, uncache it. We could use a smarter strategy
-            // based on a LRU, but that's a bit overkill for now.
-            poGDS->poLastUsedBand->UncacheData();
-            poGDS->nCachedBytes = 0;
-        }
-        else
-        {
-            // Once we have cached more than nCachedBytesThreshold bytes, we
-            // will switch to "one-band-at-a-time" strategy, instead of caching
-            // all bands that have been accessed.
-            if (poGDS->nCachedBytes > poGDS->nCachedBytesThreshold)
-            {
-                CPLDebug( "GRIB2",
-                          "Maximum band cache size reached for this dataset. "
-                          "Caching only one band at a time from now");
-                for(int i=0;i<poGDS->nBands;i++)
-                {
-                    reinterpret_cast<GRIB2RasterBand*>(
-                        poGDS->GetRasterBand(i+1))->UncacheData();
-                }
-                poGDS->nCachedBytes = 0;
-                poGDS->bCacheOnlyOneBand = TRUE;
-            }
-        }
-
-        FileDataSource grib_fp (poGDS->fp);
-
-        // we don't seem to have any way to detect errors in this!
-        ReadGribData(grib_fp, start, subgNum, &m_Grib_Data, &m_Grib_MetaData);
-        if( !m_Grib_Data )
-        {
-            CPLError( CE_Failure, CPLE_AppDefined, "Out of memory." );
-            return CE_Failure;
-        }
-
-/* -------------------------------------------------------------------- */
-/*      Check that this band matches the dataset as a whole, size       */
-/*      wise. (#3246)                                                   */
-/* -------------------------------------------------------------------- */
-        nGribDataXSize = m_Grib_MetaData->gds.Nx;
-        nGribDataYSize = m_Grib_MetaData->gds.Ny;
-
-        poGDS->nCachedBytes += nGribDataXSize * nGribDataYSize * sizeof(double);
-        poGDS->poLastUsedBand = this;
-
-        if( nGribDataXSize != nRasterXSize
-            || nGribDataYSize != nRasterYSize )
-        {
-            CPLError( CE_Warning, CPLE_AppDefined,
-                      "Band %d of GRIB2 dataset is %dx%d, while the first band "
-                      "and dataset is %dx%d.  Georeferencing of band %d may "
-                      "be incorrect, and data access may be incomplete.",
-                      nBand,
-                      nGribDataXSize, nGribDataYSize,
-                      nRasterXSize, nRasterYSize,
-                      nBand );
-        }
-    }
-
-    return CE_None;
-}
 
 /************************************************************************/
 /*                             IReadBlock()                             */
@@ -341,38 +153,6 @@ CPLErr GRIB2RasterBand::IReadBlock( int /* nBlockXOff */,
                                    void * pImage )
 
 {
-    CPLErr eErr = LoadData();
-    if (eErr != CE_None)
-        return eErr;
-
-/* -------------------------------------------------------------------- */
-/*      The image as read is always upside down to our normal           */
-/*      orientation so we need to effectively flip it at this           */
-/*      point.  We also need to deal with bands that are a different    */
-/*      size than the dataset as a whole.                               */
-/* -------------------------------------------------------------------- */
-    if( nGribDataXSize == nRasterXSize
-        && nGribDataYSize == nRasterYSize )
-    {
-        // Simple 1:1 case.
-        memcpy(pImage,
-               m_Grib_Data + nRasterXSize * (nRasterYSize - nBlockYOff - 1),
-               nRasterXSize * sizeof(double));
-
-        return CE_None;
-    }
-
-    memset( pImage, 0, sizeof(double) * nRasterXSize );
-
-    if( nBlockYOff >= nGribDataYSize ) // off image?
-        return CE_None;
-
-    const int nCopyWords = std::min(nRasterXSize, nGribDataXSize);
-
-    memcpy( pImage,
-            m_Grib_Data + nGribDataXSize*(nGribDataYSize-nBlockYOff-1),
-            nCopyWords * sizeof(double) );
-
     return CE_None;
 }
 
@@ -382,43 +162,10 @@ CPLErr GRIB2RasterBand::IReadBlock( int /* nBlockXOff */,
 
 double GRIB2RasterBand::GetNoDataValue( int *pbSuccess )
 {
-    CPLErr eErr = LoadData();
-    if (eErr != CE_None ||
-        m_Grib_MetaData == NULL ||
-        m_Grib_MetaData->gridAttrib.f_miss == 0)
-    {
-        if (pbSuccess)
-            *pbSuccess = FALSE;
-        return 0;
-    }
-
-    if (m_Grib_MetaData->gridAttrib.f_miss == 2)
-    {
-        /* what TODO ? */
-        CPLDebug("GRIB2", "Secondary missing value also set for band %d : %f",
-                 nBand, m_Grib_MetaData->gridAttrib.missSec);
-    }
-
-    if (pbSuccess)
-        *pbSuccess = TRUE;
-    return m_Grib_MetaData->gridAttrib.missPri;
+    *pbSuccess = FALSE;
+    return 0;
 }
 
-/************************************************************************/
-/*                            ReadGribData()                            */
-/************************************************************************/
-
-void GRIB2RasterBand::ReadGribData( DataSource & fp, sInt4 start, int subgNum,
-                                   double** data, grib_MetaData** metaData)
-{
-}
-
-/************************************************************************/
-/*                            UncacheData()                             */
-/************************************************************************/
-
-void GRIB2RasterBand::UncacheData()
-{
 /************************************************************************/
 /*                           ~GRIB2RasterBand()                          */
 /************************************************************************/
@@ -433,17 +180,10 @@ GRIB2RasterBand::~GRIB2RasterBand()
 /* ==================================================================== */
 /************************************************************************/
 
-GRIB2Dataset::GRIB2Dataset() :
-    fp(NULL),
-    pszProjection(CPLStrdup("")),
-    nCachedBytes(0),
-    // Switch caching strategy once 100 MB threshold is reached.
-    // Why 100 MB ? --> why not.
-    nCachedBytesThreshold(
-        static_cast<GIntBig>(atoi(CPLGetConfigOption("GRIB_CACHEMAX", "100")))
-        * 1024 * 1024),
-    bCacheOnlyOneBand(FALSE),
-    poLastUsedBand(NULL)
+GRIB2Dataset::GRIB2Dataset():
+  fp(0),
+  ctx(0),
+  pszProjection(0)
 {
   adfGeoTransform[0] = 0.0;
   adfGeoTransform[1] = 1.0;
@@ -462,6 +202,12 @@ GRIB2Dataset::~GRIB2Dataset()
 {
     FlushCache();
     CPLFree( pszProjection );
+    if (ctx) {
+      grib_context_delete(ctx);
+    }
+    if (fp) {
+      fclose(fp);
+    }
 }
 
 /************************************************************************/
@@ -547,9 +293,9 @@ GDALDataset *GRIB2Dataset::Open( GDALOpenInfo * poOpenInfo )
 /*                            SetMetadata()                             */
 /************************************************************************/
 
+/*
 void GRIB2Dataset::SetGribMetaData(grib_MetaData* meta)
 {
-/*
     nRasterXSize = meta->gds.Nx;
     nRasterYSize = meta->gds.Ny;
 
@@ -735,11 +481,11 @@ void GRIB2Dataset::SetGribMetaData(grib_MetaData* meta)
     CPLFree( pszProjection );
     pszProjection = NULL;
     oSRS.exportToWkt( &(pszProjection) );
-***/
 }
+*/
 
 /************************************************************************/
-/*                       GDALDeregister_GRIB()                          */
+/*                       GDALDeregister_GRIB2()                          */
 /************************************************************************/
 
 static void GDALDeregister_GRIB2(GDALDriver* )
@@ -752,7 +498,7 @@ static void GDALDeregister_GRIB2(GDALDriver* )
 }
 
 /************************************************************************/
-/*                         GDALRegister_GRIB()                          */
+/*                         GDALRegister_GRIB2()                          */
 /************************************************************************/
 
 void GDALRegister_GRIB2()
@@ -772,7 +518,7 @@ void GDALRegister_GRIB2()
 
     poDriver->pfnOpen = GRIB2Dataset::Open;
     poDriver->pfnIdentify = GRIB2Dataset::Identify;
-    poDriver->pfnUnloadDriver = GDALDeregister_GRIB;
+    poDriver->pfnUnloadDriver = GDALDeregister_GRIB2;
 
     GetGDALDriverManager()->RegisterDriver( poDriver );
 }
